@@ -14,9 +14,9 @@
   const mapWidth = Math.floor(worldWidth / tileSize);
   const mapHeight = Math.floor(worldHeight / tileSize);
   const playerTownCenterTileX = 8;
+  const playerTownCenterTileY = 8;
   const aiTownCenterTileX = mapWidth - 11;
-  const townCenterTileY = Math.floor(mapHeight / 2) - 1;
-  const centralRoadTileY = townCenterTileY + 3;
+  const aiTownCenterTileY = mapHeight - 11;
   const cameraEdgeSize = 28;
   const cameraScrollSpeed = 780;
   const selectionDragThreshold = 8;
@@ -134,10 +134,12 @@
     workerMenu: { open: false, unitId: null },
     camera: { x: 0, y: 0, mouseX: viewWidth / 2, mouseY: viewHeight / 2, mouseInside: false, left: false, right: false, up: false, down: false },
     selectionBox: { start: null, current: null, worldStart: null, worldCurrent: null, active: false, additive: false, suppressClick: false },
+    clickMarkers: [],
     audioCtx: null,
   };
 
   const gameEntities = [];
+  const mapDecor = { seed: 0, bases: [], safeZones: [], buildPads: [], routes: [], meadows: [], resources: [], protectedTiles: new Set() };
   let nextEntityId = 1;
 
   const woodStatNode = document.getElementById('woodStat');
@@ -177,15 +179,7 @@
     debugLog(...args);
   }
   function assetCandidatePaths(src) {
-    const match = src.match(/^(.*?)(\.(png|jpg|jpeg))?$/i);
-    const base = match ? match[1] : src;
-    const explicit = src;
-    return Array.from(new Set([
-      explicit,
-      `${base}.jpg`,
-      `${base}.jpeg`,
-      `${base}.png`,
-    ]));
+    return [src];
   }
   function loadSpriteAsset(assetKey, src, options = {}) {
     const image = new Image();
@@ -411,6 +405,153 @@
   }
 
   createTerrainTile();
+
+  function zoneRect(x1, y1, x2, y2) {
+    return { x1: Math.max(0, Math.min(x1, x2)), y1: Math.max(0, Math.min(y1, y2)), x2: Math.min(mapWidth - 1, Math.max(x1, x2)), y2: Math.min(mapHeight - 1, Math.max(y1, y2)) };
+  }
+
+  function tileKey(tileX, tileY) { return `${tileX},${tileY}`; }
+  function protectedTileSetFrom(zones = []) {
+    const out = new Set();
+    zones.forEach(zone => {
+      for (let tileY = zone.y1; tileY <= zone.y2; tileY++) {
+        for (let tileX = zone.x1; tileX <= zone.x2; tileX++) out.add(tileKey(tileX, tileY));
+      }
+    });
+    return out;
+  }
+  function tileProtected(tileX, tileY) { return mapDecor.protectedTiles.has(tileKey(tileX, tileY)); }
+  function pointInsideZone(tileX, tileY, zone) { return tileX >= zone.x1 && tileX <= zone.x2 && tileY >= zone.y1 && tileY <= zone.y2; }
+  function tileOnMainRoute(tileX, tileY, padding = 0) {
+    return mapDecor.routes.some(route => tileX >= route.x1 - padding && tileX <= route.x2 + padding && tileY >= route.y1 - padding && tileY <= route.y2 + padding);
+  }
+
+  function addClickMarker(x, y, kind = 'move') {
+    const palette = kind === 'attack'
+      ? { ring: '#ff9b73', fill: 'rgba(255,110,82,0.16)' }
+      : kind === 'gather'
+        ? { ring: '#a9e26f', fill: 'rgba(142,207,94,0.16)' }
+        : kind === 'build'
+          ? { ring: '#ffd36b', fill: 'rgba(255,211,107,0.18)' }
+          : { ring: '#d7efff', fill: 'rgba(132,194,255,0.16)' };
+    gameState.clickMarkers.push({ x, y, life: 22, maxLife: 22, ring: palette.ring, fill: palette.fill });
+  }
+
+  function generateRtsMap(width, height, seed = 0xC0FFEE) {
+    const random = seededRandom(seed);
+    const resources = [];
+    const occupied = new Set();
+    const reserve = (zone, margin = 0) => {
+      for (let tileY = zone.y1 - margin; tileY <= zone.y2 + margin; tileY++) {
+        for (let tileX = zone.x1 - margin; tileX <= zone.x2 + margin; tileX++) {
+          if (tileX < 0 || tileY < 0 || tileX >= width || tileY >= height) continue;
+          occupied.add(tileKey(tileX, tileY));
+        }
+      }
+    };
+    const free = (tileX, tileY) => tileX >= 0 && tileY >= 0 && tileX < width && tileY < height && !occupied.has(tileKey(tileX, tileY));
+    const randInt = (min, max) => Math.floor(random() * (max - min + 1)) + min;
+    const mirroredX = tileX => width - 1 - tileX;
+    const mirroredY = tileY => height - 1 - tileY;
+    const bases = [
+      { owner: 'player', x: playerTownCenterTileX, y: playerTownCenterTileY },
+      { owner: 'ai', x: aiTownCenterTileX, y: aiTownCenterTileY },
+    ];
+    const safeZones = [
+      zoneRect(playerTownCenterTileX - 5, playerTownCenterTileY - 5, playerTownCenterTileX + 11, playerTownCenterTileY + 11),
+      zoneRect(aiTownCenterTileX - 5, aiTownCenterTileY - 5, aiTownCenterTileX + 11, aiTownCenterTileY + 11),
+    ];
+    const buildPads = [
+      zoneRect(playerTownCenterTileX - 2, playerTownCenterTileY - 2, playerTownCenterTileX + 8, playerTownCenterTileY + 8),
+      zoneRect(aiTownCenterTileX - 2, aiTownCenterTileY - 2, aiTownCenterTileX + 8, aiTownCenterTileY + 8),
+    ];
+    const routes = [
+      zoneRect(playerTownCenterTileX + 3, playerTownCenterTileY + 4, Math.floor(width * 0.34), playerTownCenterTileY + 7),
+      zoneRect(Math.floor(width * 0.3), playerTownCenterTileY + 4, Math.floor(width * 0.36), Math.floor(height * 0.52)),
+      zoneRect(Math.floor(width * 0.22), Math.floor(height * 0.46), Math.floor(width * 0.78), Math.floor(height * 0.54)),
+      zoneRect(Math.floor(width * 0.64), Math.floor(height * 0.48), Math.floor(width * 0.7), aiTownCenterTileY - 4),
+      zoneRect(Math.floor(width * 0.66), aiTownCenterTileY - 2, aiTownCenterTileX, aiTownCenterTileY + 1),
+      zoneRect(Math.floor(width * 0.18), Math.floor(height * 0.22), Math.floor(width * 0.78), Math.floor(height * 0.26)),
+      zoneRect(Math.floor(width * 0.22), Math.floor(height * 0.74), Math.floor(width * 0.82), Math.floor(height * 0.78)),
+    ];
+    const meadows = [
+      zoneRect(4, 4, Math.floor(width * 0.34), Math.floor(height * 0.34)),
+      zoneRect(Math.floor(width * 0.66), Math.floor(height * 0.66), width - 5, height - 5),
+      zoneRect(Math.floor(width * 0.28), Math.floor(height * 0.38), Math.floor(width * 0.72), Math.floor(height * 0.62)),
+    ];
+    [...safeZones, ...buildPads, ...routes].forEach(zone => reserve(zone, zone === routes[0] ? 1 : 0));
+
+    function place(type, tileX, tileY, amount) {
+      if (!free(tileX, tileY)) return false;
+      if (tileProtected(tileX, tileY) || tileOnMainRoute(tileX, tileY, 0)) return false;
+      resources.push({ type, tileX, tileY, amount });
+      occupied.add(tileKey(tileX, tileY));
+      return true;
+    }
+
+    function placeMirrored(type, tileX, tileY, amount) {
+      const mirrorX = mirroredX(tileX);
+      const mirrorY = mirroredY(tileY);
+      if (tileX === mirrorX && tileY === mirrorY) return place(type, tileX, tileY, amount);
+      if (!free(tileX, tileY) || !free(mirrorX, mirrorY)) return false;
+      if (tileProtected(tileX, tileY) || tileProtected(mirrorX, mirrorY)) return false;
+      if (tileOnMainRoute(tileX, tileY, 0) || tileOnMainRoute(mirrorX, mirrorY, 0)) return false;
+      resources.push({ type, tileX, tileY, amount });
+      resources.push({ type, tileX: mirrorX, tileY: mirrorY, amount });
+      occupied.add(tileKey(tileX, tileY));
+      occupied.add(tileKey(mirrorX, mirrorY));
+      return true;
+    }
+
+    function placeClusterMirrored(type, centerX, centerY, radius, count, amount, carveChance = 0.18) {
+      let placed = 0;
+      let tries = 0;
+      while (placed < count && tries < count * 22) {
+        tries++;
+        const tileX = centerX + randInt(-radius, radius);
+        const tileY = centerY + randInt(-radius, radius);
+        if (Math.hypot(tileX - centerX, tileY - centerY) > radius) continue;
+        if (random() < carveChance && tileOnMainRoute(tileX, tileY, 1)) continue;
+        if (placeMirrored(type, tileX, tileY, amount)) placed++;
+      }
+    }
+
+    function placeCluster(type, zone, radius, count, amount, keepOpen = true) {
+      let tries = 0;
+      let placed = 0;
+      const centerX = randInt(zone.x1, zone.x2);
+      const centerY = randInt(zone.y1, zone.y2);
+      while (placed < count && tries < count * 24) {
+        tries++;
+        const tileX = centerX + randInt(-radius, radius);
+        const tileY = centerY + randInt(-radius, radius);
+        if (Math.hypot(tileX - centerX, tileY - centerY) > radius) continue;
+        if (keepOpen && tileOnMainRoute(tileX, tileY, 1)) continue;
+        if (place(type, tileX, tileY, amount)) placed++;
+      }
+    }
+
+    for (let index = 0; index < 4; index++) {
+      placeClusterMirrored('tree', playerTownCenterTileX + 8 + index * 4, playerTownCenterTileY + 11 + (index % 2) * 6, 3 + (index % 2), 11 + index * 2, 95, 0.34);
+      placeClusterMirrored('tree', playerTownCenterTileX + 13 + index * 5, playerTownCenterTileY + 4 + (index % 3) * 5, 4, 10 + index, 88, 0.28);
+    }
+    for (let index = 0; index < 3; index++) {
+      placeClusterMirrored('rock', playerTownCenterTileX + 10 + index * 8, playerTownCenterTileY + 8 + index * 4, 2 + (index % 2), 4 + index, 180, 0.12);
+    }
+    for (let index = 0; index < 2; index++) {
+      placeClusterMirrored('goldmine', playerTownCenterTileX + 15 + index * 7, playerTownCenterTileY + 5 + index * 7, 2, 2, 260 + index * 40, 0.08);
+    }
+
+    const centerZone = zoneRect(Math.floor(width * 0.38), Math.floor(height * 0.3), Math.floor(width * 0.62), Math.floor(height * 0.7));
+    placeCluster('tree', zoneRect(centerZone.x1 - 8, centerZone.y1 + 4, centerZone.x1 - 2, centerZone.y2 - 6), 5, 16, 104);
+    placeCluster('tree', zoneRect(centerZone.x2 + 2, centerZone.y1 + 6, centerZone.x2 + 8, centerZone.y2 - 4), 5, 16, 104);
+    placeCluster('rock', zoneRect(centerZone.x1 + 4, centerZone.y1 + 2, centerZone.x1 + 10, centerZone.y1 + 8), 3, 7, 210);
+    placeCluster('rock', zoneRect(centerZone.x2 - 10, centerZone.y2 - 8, centerZone.x2 - 4, centerZone.y2 - 2), 3, 7, 210);
+    placeCluster('goldmine', zoneRect(centerZone.x1 + 6, centerZone.y1 + 10, centerZone.x1 + 9, centerZone.y1 + 14), 2, 3, 340, false);
+    placeCluster('goldmine', zoneRect(centerZone.x2 - 9, centerZone.y2 - 14, centerZone.x2 - 6, centerZone.y2 - 10), 2, 3, 340, false);
+
+    return { seed, bases, safeZones, buildPads, routes, meadows, resources, protectedTiles: new Set() };
+  }
 
   function makeFactionState(owner) {
     return { owner, resources: { ...startingResources }, pop: 0, popCap: 0, townCenterId: null, buildHistory: [], trainHistory: [] };
@@ -820,6 +961,7 @@
   }
 
   function mirrorTileX(tileX, width) { return mapWidth - tileX - width; }
+  function mirrorTileY(tileY, height) { return mapHeight - tileY - height; }
   function findTownCenter(owner) { return entityById(faction(owner).townCenterId) || gameEntities.find(entity => entity.kind === 'building' && entity.owner === owner && entity.type === 'towncenter') || null; }
 
   function findFactionBuildSpot(owner, type) {
@@ -1431,7 +1573,7 @@
 
   function mirrorBuildSpot(action) {
     const def = buildingDefs[action.type];
-    return findNearestFreeRect(mirrorTileX(action.sourceTileX, def.w), action.sourceTileY, def.w, def.h, 12) || findFactionBuildSpot('ai', action.type);
+    return findNearestFreeRect(mirrorTileX(action.sourceTileX, def.w), mirrorTileY(action.sourceTileY, def.h), def.w, def.h, 12) || findFactionBuildSpot('ai', action.type);
   }
 
   function processAiMirrorQueue() {
@@ -1658,6 +1800,7 @@
       effect.life -= 1;
       return effect.life > 0;
     });
+    gameState.clickMarkers = gameState.clickMarkers.filter(marker => (marker.life -= 1) > 0);
   }
 
   function update(dt) {
@@ -1876,15 +2019,13 @@
   }
 
   function drawGround() {
-    const leftPad = { x1: playerTownCenterTileX - 1, x2: playerTownCenterTileX + 7, y1: townCenterTileY - 1, y2: townCenterTileY + 7 };
-    const rightPad = { x1: aiTownCenterTileX - 1, x2: aiTownCenterTileX + 7, y1: townCenterTileY - 1, y2: townCenterTileY + 7 };
     const texW = terrainTileCanvas.width;
     const texH = terrainTileCanvas.height;
     const startX = Math.floor(gameState.camera.x / texW) * texW;
     const startY = Math.floor(gameState.camera.y / texH) * texH;
     const endX = gameState.camera.x + viewWidth + texW;
     const endY = gameState.camera.y + viewHeight + texH;
-    gameCtx.fillStyle = '#5d7336';
+    gameCtx.fillStyle = '#587334';
     gameCtx.fillRect(gameState.camera.x, gameState.camera.y, viewWidth, viewHeight);
     for (let y = startY; y <= endY; y += texH) {
       for (let x = startX; x <= endX; x += texW) gameCtx.drawImage(terrainTileCanvas, x, y, texW, texH);
@@ -1898,23 +2039,28 @@
       for (let tileX = startTileX; tileX <= endTileX; tileX++) {
         const px = tileX * tileSize;
         const py = tileY * tileSize;
-        const onLeftPad = tileX >= leftPad.x1 && tileX <= leftPad.x2 && tileY >= leftPad.y1 && tileY <= leftPad.y2;
-        const onRightPad = tileX >= rightPad.x1 && tileX <= rightPad.x2 && tileY >= rightPad.y1 && tileY <= rightPad.y2;
-        const onRoad = ((tileY === centralRoadTileY || tileY === centralRoadTileY + 1) && tileX >= leftPad.x2 && tileX <= rightPad.x1)
-          || ((tileX === playerTownCenterTileX + 3 || tileX === playerTownCenterTileX + 4) && tileY >= centralRoadTileY - 1 && tileY <= centralRoadTileY + 1)
-          || ((tileX === aiTownCenterTileX - 1 || tileX === aiTownCenterTileX) && tileY >= centralRoadTileY - 1 && tileY <= centralRoadTileY + 1);
-        if (onLeftPad || onRightPad || onRoad) {
-          const sprite = onLeftPad || onRightPad ? SPRITES.ground.stone : SPRITES.ground.road;
-          renderSprite(atlasImg, sprite, px, py, tileSize, tileSize, { alpha: onRoad ? 0.8 : 0.9 });
-        }
+        const onBasePad = mapDecor.buildPads.some(zone => pointInsideZone(tileX, tileY, zone));
+        const onRoute = tileOnMainRoute(tileX, tileY, 0);
+        const inMeadow = mapDecor.meadows.some(zone => pointInsideZone(tileX, tileY, zone));
+        if (inMeadow) renderSprite(atlasImg, SPRITES.ground.grassA, px, py, tileSize, tileSize, { alpha: 0.12 });
+        if (onBasePad) renderSprite(atlasImg, SPRITES.ground.base, px, py, tileSize, tileSize, { alpha: 0.42 });
+        else if (onRoute) renderSprite(atlasImg, SPRITES.ground.road, px, py, tileSize, tileSize, { alpha: 0.74 });
+        else if ((tileX + tileY + Math.floor(mapDecor.seed / 17)) % 9 === 0) renderSprite(atlasImg, SPRITES.ground.grassB, px, py, tileSize, tileSize, { alpha: 0.12 });
         if (gameState.buildMode) {
           gameCtx.strokeStyle = 'rgba(25,20,12,0.07)';
           gameCtx.strokeRect(px, py, tileSize, tileSize);
         }
       }
     }
-    renderSprite(atlasImg, SPRITES.ground.base, playerTownCenterTileX * tileSize, townCenterTileY * tileSize - 8, 3 * tileSize, 3 * tileSize);
-    renderSprite(atlasImg, SPRITES.ground.base, aiTownCenterTileX * tileSize, townCenterTileY * tileSize - 8, 3 * tileSize, 3 * tileSize);
+
+    mapDecor.bases.forEach(base => {
+      renderSprite(atlasImg, SPRITES.ground.base, base.x * tileSize, base.y * tileSize - 8, 3 * tileSize, 3 * tileSize, { alpha: 0.9 });
+      gameCtx.save();
+      gameCtx.globalAlpha = 0.18;
+      gameCtx.fillStyle = base.owner === 'player' ? '#d1f0a1' : '#a8d8ff';
+      gameCtx.fillRect((base.x - 2) * tileSize, (base.y - 2) * tileSize, 7 * tileSize, 7 * tileSize);
+      gameCtx.restore();
+    });
   }
 
   function buildingSpriteKey(type) {
@@ -2109,13 +2255,62 @@
     const x = resource.tileX * tileSize;
     const y = resource.tileY * tileSize;
     let rect = SPRITES.resources.tree;
-    let dw = 42, dh = 42, dx = x - 4, dy = y - 12;
-    if (resource.type === 'goldmine') { rect = SPRITES.resources.goldmine; dw = 56; dh = 44; dx = x - 12; dy = y - 10; }
-    if (resource.type === 'rock') { rect = SPRITES.resources.rock; dw = 46; dh = 36; dx = x - 7; dy = y - 2; }
+    let dw = 44, dh = 48, dx = x - 6, dy = y - 16;
+    let shadowW = 16;
+    if (resource.type === 'goldmine') { rect = SPRITES.resources.goldmine; dw = 60; dh = 48; dx = x - 14; dy = y - 12; shadowW = 20; }
+    if (resource.type === 'rock') { rect = SPRITES.resources.rock; dw = 50; dh = 40; dx = x - 9; dy = y - 4; shadowW = 18; }
+    gameCtx.save();
+    gameCtx.fillStyle = 'rgba(0,0,0,0.2)';
+    gameCtx.beginPath();
+    gameCtx.ellipse(x + tileSize / 2, y + tileSize - 2, shadowW, 7, 0, 0, Math.PI * 2);
+    gameCtx.fill();
     renderSprite(atlasImg, rect, dx, dy, dw, dh);
+    if (resource.amount > 0) {
+      gameCtx.fillStyle = 'rgba(18,14,10,0.66)';
+      gameCtx.fillRect(x + 3, y + 2, 18, 10);
+      gameCtx.fillStyle = resource.type === 'tree' ? '#cde89b' : resource.type === 'goldmine' ? '#ffd36b' : '#d8dde6';
+      gameCtx.font = '10px sans-serif';
+      gameCtx.fillText(`${Math.ceil(resource.amount / 10)}`, x + 6, y + 10);
+    }
+    gameCtx.restore();
   }
 
   function currentFrame(frames, speed, moving = true) { return moving ? frames[Math.floor(performance.now() / speed) % frames.length] : frames[0]; }
+
+  function drawWorkerUnit(unit) {
+    const bodyColor = unit.owner === 'player' ? '#f2d7a1' : '#a8d8ff';
+    const clothColor = unit.owner === 'player' ? '#6ea35e' : '#4d78c2';
+    gameCtx.save();
+    gameCtx.translate(unit.x, unit.y);
+    gameCtx.scale(unit.facing < 0 ? -1 : 1, 1);
+    const bob = unit.moving ? Math.sin(unit.animTime * 0.22) * 1.4 : 0;
+    gameCtx.fillStyle = clothColor;
+    gameCtx.fillRect(-7, -14 + bob, 14, 18);
+    gameCtx.fillStyle = '#3b2a1d';
+    gameCtx.fillRect(-6, 2 + bob, 4, 11);
+    gameCtx.fillRect(2, 2 + bob, 4, 11);
+    gameCtx.fillStyle = bodyColor;
+    gameCtx.beginPath();
+    gameCtx.arc(0, -19 + bob, 7, 0, Math.PI * 2);
+    gameCtx.fill();
+    gameCtx.strokeStyle = '#2b1d13';
+    gameCtx.lineWidth = 2.5;
+    gameCtx.beginPath();
+    gameCtx.moveTo(-3, -6 + bob);
+    gameCtx.lineTo(-9, 3 + bob + (unit.moving ? 1 : 0));
+    gameCtx.moveTo(3, -6 + bob);
+    gameCtx.lineTo(8, 1 + bob + (unit.job === 'gather' ? -2 : 0));
+    gameCtx.stroke();
+    if (unit.job === 'gather') {
+      gameCtx.strokeStyle = '#caa264';
+      gameCtx.lineWidth = 2;
+      gameCtx.beginPath();
+      gameCtx.moveTo(8, -4 + bob);
+      gameCtx.lineTo(14, -14 + bob);
+      gameCtx.stroke();
+    }
+    gameCtx.restore();
+  }
 
   function drawUnit(unit) {
     const spriteBounds = romanUnitSpriteBounds(unit);
@@ -2131,21 +2326,9 @@
     gameCtx.beginPath();
     gameCtx.ellipse(unit.x, unit.y + unit.r + 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
     gameCtx.fill();
-    if (unit.type === 'worker') {
-      const frames = SPRITES.units[unit.type];
-      const frame = currentFrame(frames, 220, unit.moving || unit.job === 'attack');
-      renderSprite(moveImg, frame, unit.x - 19, unit.y - 38, 38, 48, { flipX: unit.facing < 0, tint: ownerTint(unit.owner) });
-    } else if (unit.type === 'legionary' || unit.type === 'soldier') {
-      drawLegionaryUnit(unit);
-    } else if (unit.type === 'testudo') {
-      drawTestudoUnit(unit);
-    } else {
-      const frames = SPRITES.units[unit.type];
-      if (frames) {
-        const frame = currentFrame(frames, 120, unit.moving || unit.job === 'attack');
-        renderSprite(moveImg, frame, unit.x - 20, unit.y - 40, 40, 50, { flipX: unit.facing < 0, tint: ownerTint(unit.owner) });
-      }
-    }
+    if (unit.type === 'worker') drawWorkerUnit(unit);
+    else if (unit.type === 'legionary' || unit.type === 'soldier') drawLegionaryUnit(unit);
+    else if (unit.type === 'testudo') drawTestudoUnit(unit);
     gameCtx.restore();
   }
 
@@ -2216,6 +2399,19 @@
   }
 
   function drawEffects() {
+    for (const marker of gameState.clickMarkers) {
+      const progress = 1 - marker.life / marker.maxLife;
+      gameCtx.save();
+      gameCtx.globalAlpha = 0.85 - progress * 0.7;
+      gameCtx.strokeStyle = marker.ring;
+      gameCtx.fillStyle = marker.fill;
+      gameCtx.lineWidth = 2;
+      gameCtx.beginPath();
+      gameCtx.arc(marker.x, marker.y, 8 + progress * 16, 0, Math.PI * 2);
+      gameCtx.fill();
+      gameCtx.stroke();
+      gameCtx.restore();
+    }
     for (const effect of gameState.projectiles) {
       gameCtx.save();
       gameCtx.globalAlpha = effect.life / effect.maxLife;
@@ -2319,6 +2515,7 @@
     gameState.buildMode = null;
     gameState.projectiles = [];
     gameState.particles = [];
+    gameState.clickMarkers = [];
     gameState.lastTime = 0;
     gameState.farmTimer = 0;
     gameState.gameOver = null;
@@ -2343,66 +2540,39 @@
       down: false,
     });
 
-    const spawnSymmetricResource = (type, tileX, tileY, amount) => {
-      createResource(type, tileX, tileY, amount);
-      createResource(type, mirrorTileX(tileX, 1), tileY, amount);
-    };
-    const spawnMirroredPatch = (type, startX, startY, width, height, amount, skip = null) => {
-      for (let dy = 0; dy < height; dy++) {
-        for (let dx = 0; dx < width; dx++) {
-          if (skip && skip(dx, dy)) continue;
-          spawnSymmetricResource(type, startX + dx, startY + dy, amount);
-        }
-      }
-    };
-    const spawnNeutralPatch = (type, startX, startY, width, height, amount, skip = null) => {
-      for (let dy = 0; dy < height; dy++) {
-        for (let dx = 0; dx < width; dx++) {
-          if (skip && skip(dx, dy)) continue;
-          createResource(type, startX + dx, startY + dy, amount);
-        }
-      }
-    };
+    const generatedMap = generateRtsMap(mapWidth, mapHeight, 0xBADC0DE);
+    mapDecor.seed = generatedMap.seed;
+    mapDecor.bases = generatedMap.bases;
+    mapDecor.safeZones = generatedMap.safeZones;
+    mapDecor.buildPads = generatedMap.buildPads;
+    mapDecor.routes = generatedMap.routes;
+    mapDecor.meadows = generatedMap.meadows;
+    mapDecor.resources = generatedMap.resources;
+    mapDecor.protectedTiles = generatedMap.protectedTiles;
 
-    const playerTownCenter = createBuilding('towncenter', 'player', playerTownCenterTileX, townCenterTileY);
-    const aiTownCenter = createBuilding('towncenter', 'ai', aiTownCenterTileX, townCenterTileY);
+    const playerTownCenter = createBuilding('towncenter', 'player', playerTownCenterTileX, playerTownCenterTileY);
+    const aiTownCenter = createBuilding('towncenter', 'ai', aiTownCenterTileX, aiTownCenterTileY);
     playerTownCenter.mirroredId = aiTownCenter.id;
     aiTownCenter.mirrorSourceId = playerTownCenter.id;
 
     const playerWorkerTiles = [
-      { tileX: playerTownCenterTileX + 1, tileY: townCenterTileY + 4 },
-      { tileX: playerTownCenterTileX + 2, tileY: townCenterTileY + 4 },
-      { tileX: playerTownCenterTileX + 3, tileY: townCenterTileY + 5 },
+      { tileX: playerTownCenterTileX + 1, tileY: playerTownCenterTileY + 4 },
+      { tileX: playerTownCenterTileX + 2, tileY: playerTownCenterTileY + 4 },
+      { tileX: playerTownCenterTileX + 3, tileY: playerTownCenterTileY + 5 },
     ];
-    for (const spawn of playerWorkerTiles) {
-      createUnit('worker', 'player', spawn.tileX, spawn.tileY);
-      addPop('player', 1);
-      createUnit('worker', 'ai', mirrorTileX(spawn.tileX, 1), spawn.tileY);
-      addPop('ai', 1);
-    }
+    const aiWorkerTiles = [
+      { tileX: aiTownCenterTileX + 1, tileY: aiTownCenterTileY - 2 },
+      { tileX: aiTownCenterTileX, tileY: aiTownCenterTileY - 2 },
+      { tileX: aiTownCenterTileX - 1, tileY: aiTownCenterTileY - 3 },
+    ];
+    playerWorkerTiles.forEach(spawn => { createUnit('worker', 'player', spawn.tileX, spawn.tileY); addPop('player', 1); });
+    aiWorkerTiles.forEach(spawn => { createUnit('worker', 'ai', spawn.tileX, spawn.tileY); addPop('ai', 1); });
 
-    spawnMirroredPatch('tree', playerTownCenterTileX + 5, townCenterTileY - 12, 5, 4, 90, (dx, dy) => (dx === 4 && dy === 0) || (dx === 0 && dy === 3));
-    spawnMirroredPatch('tree', playerTownCenterTileX + 7, townCenterTileY + 6, 4, 4, 90, (dx, dy) => (dx === 0 && dy === 0) || (dx === 3 && dy === 3));
-    spawnMirroredPatch('tree', playerTownCenterTileX + 18, townCenterTileY - 4, 4, 3, 82, (dx, dy) => dx === 1 && dy === 1);
-    spawnMirroredPatch('tree', Math.floor(mapWidth * 0.33), townCenterTileY - 18, 4, 3, 100, (dx, dy) => (dx + dy) % 5 === 0);
-    spawnMirroredPatch('tree', Math.floor(mapWidth * 0.35), townCenterTileY + 14, 4, 3, 100, (dx, dy) => dx === 2 && dy === 1);
-
-    spawnSymmetricResource('goldmine', playerTownCenterTileX + 11, townCenterTileY - 3, 260);
-    spawnSymmetricResource('goldmine', playerTownCenterTileX + 13, townCenterTileY - 1, 240);
-    spawnSymmetricResource('rock', playerTownCenterTileX + 10, townCenterTileY + 5, 200);
-    spawnSymmetricResource('rock', playerTownCenterTileX + 12, townCenterTileY + 6, 180);
-
-    const centerTileX = Math.floor(mapWidth / 2);
-    spawnNeutralPatch('tree', centerTileX - 6, centralRoadTileY - 11, 5, 3, 110, (dx, dy) => (dx === 4 && dy === 0) || (dx === 0 && dy === 2));
-    spawnNeutralPatch('tree', centerTileX + 2, centralRoadTileY + 7, 5, 3, 110, (dx, dy) => (dx === 0 && dy === 0) || (dx === 4 && dy === 2));
-    createResource('goldmine', centerTileX - 4, centralRoadTileY - 7, 320);
-    createResource('goldmine', centerTileX + 3, centralRoadTileY + 5, 320);
-    createResource('rock', centerTileX - 2, centralRoadTileY - 2, 220);
-    createResource('rock', centerTileX + 1, centralRoadTileY + 2, 220);
+    generatedMap.resources.forEach(resource => createResource(resource.type, resource.tileX, resource.tileY, resource.amount));
 
     focusCameraOnEntity(playerTownCenter);
     gameState.hoverTile = screenToWorld(viewWidth / 2, viewHeight / 2);
-    setStatus('Grande carte RTS activee : deplace la camera avec les bords de l ecran ou les fleches. Le monde, les ressources, la construction, la selection et le combat restent actifs.', true);
+    setStatus('Nouvelle generation RTS chargee : bases opposees en diagonale, clairieres de construction protegees, ressources en clusters et axes de circulation gardes libres.', true);
     updateHud();
   }
 
@@ -2527,11 +2697,13 @@
       if (clicked && clicked.owner && clicked.owner !== formation.owner) {
         assignAttackJob(formation, clicked, { silent: true });
         playCommandSound('attack');
+        addClickMarker(pos.x, pos.y, 'attack');
         formation.orderFlash = Math.max(formation.orderFlash || 0, 10);
         setStatus('Formation tortue engagee : avance lente, defense renforcee, attaque reduite.');
       } else {
         assignMoveJob(formation, pos.x, pos.y, { silent: true });
         playCommandSound('move');
+        addClickMarker(pos.x, pos.y, 'move');
         formation.orderFlash = Math.max(formation.orderFlash || 0, 10);
         setStatus('Formation tortue deplacee en bloc.');
       }
@@ -2589,6 +2761,7 @@
         : 'Ordres contextuels appliques.';
     const soundKind = primaryKind === 'attack' ? 'attack' : primaryKind === 'gather' || primaryKind === 'deposit' ? 'gather' : primaryKind === 'assist' ? 'build' : 'move';
     playCommandSound(soundKind);
+    addClickMarker(pos.x, pos.y, soundKind === 'attack' ? 'attack' : soundKind === 'gather' ? 'gather' : soundKind === 'build' ? 'build' : 'move');
     selected.forEach(entity => { if (entity.kind === 'unit') entity.orderFlash = Math.max(entity.orderFlash || 0, 10); });
     setStatus(statusText);
   });
@@ -2628,7 +2801,6 @@
 
   Promise.all([
     waitImage(atlasImg),
-    waitImage(moveImg),
     waitImage(legionaryIdleImg),
     waitImage(legionaryAttackImg),
     waitImage(testudoImg),
