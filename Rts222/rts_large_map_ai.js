@@ -3,6 +3,15 @@
 
   const gameCanvas = document.getElementById('game');
   const gameCtx = gameCanvas.getContext('2d');
+
+  function configureCanvasContext(ctx) {
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+    if ('textRendering' in ctx.canvas.style) ctx.canvas.style.textRendering = 'geometricPrecision';
+  }
+
+  configureCanvasContext(gameCtx);
   const tileSize = TILE;
   const viewWidth = gameCanvas.width;
   const viewHeight = gameCanvas.height;
@@ -159,6 +168,7 @@
   terrainTileCanvas.width = worldTextureTileSize;
   terrainTileCanvas.height = worldTextureTileSize;
   const terrainTileCtx = terrainTileCanvas.getContext('2d');
+  configureCanvasContext(terrainTileCtx);
 
   const runtimeDebugSeen = new Set();
   const spriteAssetPaths = {
@@ -342,14 +352,75 @@
     };
   }
 
+  function pseudoRandom2D(x, y, seed = 0) {
+    const value = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123;
+    return value - Math.floor(value);
+  }
+
+  function drawSoftShadowEllipse(x, y, radiusX, radiusY, alpha = 0.24, color = '0,0,0') {
+    const gradient = gameCtx.createRadialGradient(x, y, Math.max(1, Math.min(radiusX, radiusY) * 0.18), x, y, Math.max(radiusX, radiusY));
+    gradient.addColorStop(0, `rgba(${color}, ${alpha})`);
+    gradient.addColorStop(0.6, `rgba(${color}, ${alpha * 0.46})`);
+    gradient.addColorStop(1, `rgba(${color}, 0)`);
+    gameCtx.save();
+    gameCtx.fillStyle = gradient;
+    gameCtx.beginPath();
+    gameCtx.ellipse(x, y, radiusX, radiusY, 0, 0, Math.PI * 2);
+    gameCtx.fill();
+    gameCtx.restore();
+  }
+
+  function drawWorldAtmosphere() {
+    const left = gameState.camera.x;
+    const top = gameState.camera.y;
+    const right = left + viewWidth;
+    const bottom = top + viewHeight;
+    const sunX = left + viewWidth * 0.18;
+    const sunY = top + viewHeight * 0.12;
+
+    gameCtx.save();
+    const sunWash = gameCtx.createRadialGradient(sunX, sunY, 0, sunX, sunY, viewWidth * 0.82);
+    sunWash.addColorStop(0, 'rgba(255, 228, 170, 0.18)');
+    sunWash.addColorStop(0.45, 'rgba(255, 214, 128, 0.08)');
+    sunWash.addColorStop(1, 'rgba(22, 28, 38, 0)');
+    gameCtx.fillStyle = sunWash;
+    gameCtx.fillRect(left, top, viewWidth, viewHeight);
+
+    const aerialPerspective = gameCtx.createLinearGradient(left, top, right, bottom);
+    aerialPerspective.addColorStop(0, 'rgba(255, 236, 196, 0.05)');
+    aerialPerspective.addColorStop(0.58, 'rgba(73, 111, 74, 0.02)');
+    aerialPerspective.addColorStop(1, 'rgba(16, 22, 30, 0.14)');
+    gameCtx.fillStyle = aerialPerspective;
+    gameCtx.fillRect(left, top, viewWidth, viewHeight);
+    gameCtx.restore();
+  }
+
+  function drawScreenVignette() {
+    gameCtx.save();
+    const vignette = gameCtx.createRadialGradient(viewWidth / 2, viewHeight / 2, viewHeight * 0.15, viewWidth / 2, viewHeight / 2, Math.max(viewWidth, viewHeight) * 0.72);
+    vignette.addColorStop(0, 'rgba(255,255,255,0)');
+    vignette.addColorStop(0.72, 'rgba(16,12,8,0.02)');
+    vignette.addColorStop(1, 'rgba(9,6,4,0.28)');
+    gameCtx.fillStyle = vignette;
+    gameCtx.fillRect(0, 0, viewWidth, viewHeight);
+
+    const bloom = gameCtx.createLinearGradient(0, 0, 0, viewHeight * 0.42);
+    bloom.addColorStop(0, 'rgba(255, 220, 150, 0.06)');
+    bloom.addColorStop(1, 'rgba(255, 220, 150, 0)');
+    gameCtx.fillStyle = bloom;
+    gameCtx.fillRect(0, 0, viewWidth, viewHeight * 0.42);
+    gameCtx.restore();
+  }
+
   function createTerrainTile() {
     const ctx = terrainTileCtx;
     const size = terrainTileCanvas.width;
     const random = seededRandom(0x52C0FFEE);
     const baseGradient = ctx.createLinearGradient(0, 0, size, size);
-    baseGradient.addColorStop(0, '#64793b');
-    baseGradient.addColorStop(0.5, '#556b31');
-    baseGradient.addColorStop(1, '#6b7b3f');
+    baseGradient.addColorStop(0, '#708644');
+    baseGradient.addColorStop(0.36, '#5f7637');
+    baseGradient.addColorStop(0.72, '#526a30');
+    baseGradient.addColorStop(1, '#6d7d42');
     ctx.fillStyle = baseGradient;
     ctx.fillRect(0, 0, size, size);
 
@@ -397,9 +468,35 @@
       }
     }
 
+    for (let patch = 0; patch < 65; patch++) {
+      const patchX = random() * size;
+      const patchY = random() * size;
+      const radius = 20 + random() * 54;
+      const blades = 14 + Math.floor(random() * 16);
+      ctx.strokeStyle = random() > 0.5 ? `rgba(184, 198, 112, ${0.035 + random() * 0.03})` : `rgba(68, 92, 39, ${0.035 + random() * 0.03})`;
+      ctx.lineWidth = 1 + random() * 1.35;
+      for (let blade = 0; blade < blades; blade++) {
+        const angle = -Math.PI / 2 + (random() - 0.5) * 1.4;
+        const length = 6 + random() * 16;
+        const ox = patchX + (random() - 0.5) * radius;
+        const oy = patchY + (random() - 0.5) * radius * 0.65;
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.quadraticCurveTo(ox + Math.cos(angle) * length * 0.35, oy - length * 0.4, ox + Math.cos(angle) * length, oy - length);
+        ctx.stroke();
+      }
+    }
+
+    const sunlight = ctx.createLinearGradient(0, 0, size, size * 0.78);
+    sunlight.addColorStop(0, 'rgba(255, 228, 171, 0.08)');
+    sunlight.addColorStop(0.4, 'rgba(255,255,255,0)');
+    sunlight.addColorStop(1, 'rgba(18, 28, 18, 0.1)');
+    ctx.fillStyle = sunlight;
+    ctx.fillRect(0, 0, size, size);
+
     const vignette = ctx.createRadialGradient(size / 2, size / 2, size * 0.2, size / 2, size / 2, size * 0.7);
     vignette.addColorStop(0, 'rgba(255,255,255,0)');
-    vignette.addColorStop(1, 'rgba(0,0,0,0.08)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.1)');
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, size, size);
   }
@@ -2042,25 +2139,47 @@
         const onBasePad = mapDecor.buildPads.some(zone => pointInsideZone(tileX, tileY, zone));
         const onRoute = tileOnMainRoute(tileX, tileY, 0);
         const inMeadow = mapDecor.meadows.some(zone => pointInsideZone(tileX, tileY, zone));
-        if (inMeadow) renderSprite(atlasImg, SPRITES.ground.grassA, px, py, tileSize, tileSize, { alpha: 0.12 });
-        if (onBasePad) renderSprite(atlasImg, SPRITES.ground.base, px, py, tileSize, tileSize, { alpha: 0.42 });
-        else if (onRoute) renderSprite(atlasImg, SPRITES.ground.road, px, py, tileSize, tileSize, { alpha: 0.74 });
-        else if ((tileX + tileY + Math.floor(mapDecor.seed / 17)) % 9 === 0) renderSprite(atlasImg, SPRITES.ground.grassB, px, py, tileSize, tileSize, { alpha: 0.12 });
+        if (inMeadow) renderSprite(atlasImg, SPRITES.ground.grassA, px, py, tileSize, tileSize, { alpha: 0.16 });
+        if (onBasePad) renderSprite(atlasImg, SPRITES.ground.base, px, py, tileSize, tileSize, { alpha: 0.46 });
+        else if (onRoute) renderSprite(atlasImg, SPRITES.ground.road, px, py, tileSize, tileSize, { alpha: 0.82 });
+        else if ((tileX + tileY + Math.floor(mapDecor.seed / 17)) % 9 === 0) renderSprite(atlasImg, SPRITES.ground.grassB, px, py, tileSize, tileSize, { alpha: 0.14 });
+
+        const noise = pseudoRandom2D(tileX, tileY, mapDecor.seed);
+        if (!onRoute && !onBasePad && noise > 0.78) {
+          gameCtx.save();
+          gameCtx.globalAlpha = 0.1 + (noise - 0.78) * 0.22;
+          gameCtx.fillStyle = noise > 0.9 ? '#d7d59b' : '#87a85b';
+          gameCtx.beginPath();
+          gameCtx.ellipse(px + tileSize * (0.25 + pseudoRandom2D(tileX, tileY, 11) * 0.5), py + tileSize * (0.24 + pseudoRandom2D(tileX, tileY, 29) * 0.52), 3 + noise * 4, 2 + noise * 3, pseudoRandom2D(tileX, tileY, 53) * Math.PI, 0, Math.PI * 2);
+          gameCtx.fill();
+          gameCtx.restore();
+        }
+
+        if (onRoute || onBasePad) {
+          gameCtx.save();
+          gameCtx.strokeStyle = onBasePad ? 'rgba(255, 235, 194, 0.11)' : 'rgba(255, 232, 182, 0.07)';
+          gameCtx.lineWidth = onBasePad ? 1.2 : 1;
+          gameCtx.strokeRect(px + 0.5, py + 0.5, tileSize - 1, tileSize - 1);
+          gameCtx.restore();
+        }
+
         if (gameState.buildMode) {
-          gameCtx.strokeStyle = 'rgba(25,20,12,0.07)';
+          gameCtx.strokeStyle = 'rgba(25,20,12,0.08)';
           gameCtx.strokeRect(px, py, tileSize, tileSize);
         }
       }
     }
 
     mapDecor.bases.forEach(base => {
-      renderSprite(atlasImg, SPRITES.ground.base, base.x * tileSize, base.y * tileSize - 8, 3 * tileSize, 3 * tileSize, { alpha: 0.9 });
+      renderSprite(atlasImg, SPRITES.ground.base, base.x * tileSize, base.y * tileSize - 8, 3 * tileSize, 3 * tileSize, { alpha: 0.96 });
       gameCtx.save();
-      gameCtx.globalAlpha = 0.18;
+      gameCtx.globalAlpha = 0.2;
       gameCtx.fillStyle = base.owner === 'player' ? '#d1f0a1' : '#a8d8ff';
       gameCtx.fillRect((base.x - 2) * tileSize, (base.y - 2) * tileSize, 7 * tileSize, 7 * tileSize);
       gameCtx.restore();
     });
+
+    drawWorldAtmosphere();
   }
 
   function buildingSpriteKey(type) {
@@ -2103,6 +2222,7 @@
     const y = building.tileY * tileSize;
     const w = building.w * tileSize;
     const h = building.h * tileSize;
+    drawSoftShadowEllipse(x + w / 2 + 5, y + h - 1, Math.max(20, w * 0.7), Math.max(10, h * 0.22), 0.24);
     if (wallFamilyBuilding(building)) {
       drawRomanWallBuilding(building);
       if (building.flash) {
@@ -2259,11 +2379,8 @@
     let shadowW = 16;
     if (resource.type === 'goldmine') { rect = SPRITES.resources.goldmine; dw = 60; dh = 48; dx = x - 14; dy = y - 12; shadowW = 20; }
     if (resource.type === 'rock') { rect = SPRITES.resources.rock; dw = 50; dh = 40; dx = x - 9; dy = y - 4; shadowW = 18; }
+    drawSoftShadowEllipse(x + tileSize / 2, y + tileSize - 1, shadowW + 5, 10, 0.22);
     gameCtx.save();
-    gameCtx.fillStyle = 'rgba(0,0,0,0.2)';
-    gameCtx.beginPath();
-    gameCtx.ellipse(x + tileSize / 2, y + tileSize - 2, shadowW, 7, 0, 0, Math.PI * 2);
-    gameCtx.fill();
     renderSprite(atlasImg, rect, dx, dy, dw, dh);
     if (resource.amount > 0) {
       gameCtx.fillStyle = 'rgba(18,14,10,0.66)';
@@ -2321,11 +2438,8 @@
     const shadowRadiusY = spriteBounds
       ? Math.max(unit.r * 0.45, shadowRadiusX * (unit.type === 'testudo' ? 0.34 : 0.55))
       : unit.r * 0.55;
+    drawSoftShadowEllipse(unit.x + 3, unit.y + unit.r + 7, shadowRadiusX + 5, shadowRadiusY + 3, unit.type === 'testudo' ? 0.28 : 0.22);
     gameCtx.save();
-    gameCtx.fillStyle = 'rgba(0,0,0,.24)';
-    gameCtx.beginPath();
-    gameCtx.ellipse(unit.x, unit.y + unit.r + 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
-    gameCtx.fill();
     if (unit.type === 'worker') drawWorkerUnit(unit);
     else if (unit.type === 'legionary' || unit.type === 'soldier') drawLegionaryUnit(unit);
     else if (unit.type === 'testudo') drawTestudoUnit(unit);
@@ -2406,6 +2520,8 @@
       gameCtx.strokeStyle = marker.ring;
       gameCtx.fillStyle = marker.fill;
       gameCtx.lineWidth = 2;
+      gameCtx.shadowColor = marker.ring;
+      gameCtx.shadowBlur = 14;
       gameCtx.beginPath();
       gameCtx.arc(marker.x, marker.y, 8 + progress * 16, 0, Math.PI * 2);
       gameCtx.fill();
@@ -2414,19 +2530,28 @@
     }
     for (const effect of gameState.projectiles) {
       gameCtx.save();
-      gameCtx.globalAlpha = effect.life / effect.maxLife;
+      const alpha = effect.life / effect.maxLife;
+      gameCtx.globalAlpha = alpha;
       gameCtx.strokeStyle = effect.color;
       gameCtx.lineWidth = effect.width;
+      gameCtx.shadowColor = effect.color;
+      gameCtx.shadowBlur = 14;
       gameCtx.beginPath();
       gameCtx.moveTo(effect.x1, effect.y1);
       gameCtx.lineTo(effect.x2, effect.y2);
+      gameCtx.stroke();
+      gameCtx.globalAlpha = alpha * 0.24;
+      gameCtx.lineWidth = effect.width * 2.5;
       gameCtx.stroke();
       gameCtx.restore();
     }
     for (const effect of gameState.particles) {
       gameCtx.save();
-      gameCtx.globalAlpha = effect.life / effect.maxLife;
+      const alpha = effect.life / effect.maxLife;
+      gameCtx.globalAlpha = alpha;
       gameCtx.fillStyle = effect.color;
+      gameCtx.shadowColor = effect.color;
+      gameCtx.shadowBlur = Math.max(6, effect.size * 4);
       gameCtx.beginPath();
       gameCtx.arc(effect.x, effect.y, effect.size, 0, Math.PI * 2);
       gameCtx.fill();
@@ -2435,10 +2560,18 @@
   }
 
   function drawHpBar(x, y, width, pct) {
-    gameCtx.fillStyle = 'rgba(0,0,0,.35)';
+    gameCtx.save();
+    gameCtx.fillStyle = 'rgba(11,9,6,0.66)';
+    gameCtx.fillRect(x - 1, y - 1, width + 2, 7);
+    const fill = gameCtx.createLinearGradient(x, y, x + width, y);
+    const baseColor = pct > .5 ? '#77c66a' : pct > .25 ? '#d1b55e' : '#cf6154';
+    fill.addColorStop(0, baseColor);
+    fill.addColorStop(1, pct > .5 ? '#a5ea8d' : pct > .25 ? '#f0d27b' : '#f18e82');
+    gameCtx.fillStyle = 'rgba(255,255,255,0.08)';
     gameCtx.fillRect(x, y, width, 5);
-    gameCtx.fillStyle = pct > .5 ? '#77c66a' : pct > .25 ? '#d1b55e' : '#cf6154';
+    gameCtx.fillStyle = fill;
     gameCtx.fillRect(x, y, Math.max(0, width * pct), 5);
+    gameCtx.restore();
   }
 
   function drawBuildPreview() {
@@ -2497,6 +2630,7 @@
     allUnits().filter(entity => entityVisible(entity, 160)).forEach(drawUnitOverlay);
     drawBuildPreview();
     gameCtx.restore();
+    drawScreenVignette();
     drawSelectionBoxScreen();
   }
 
